@@ -102,6 +102,12 @@ export function confirmDialog(text: string, yes = 'Yes'): Promise<boolean> {
 }
 
 export function toast(text: string, kind: 'info' | 'error' | 'ok' = 'info', ms = 3500): void {
+  const inMatch = document.body.dataset.current === 'game';
+  if (inMatch && kind !== 'error') return; // don't distract mid-battle with info toasts
+  if (inMatch) {
+    $('toasts').replaceChildren(); // at most one, and briefly
+    ms = Math.min(ms, 2500);
+  }
   const el = document.createElement('div');
   el.className = `toast ${kind === 'info' ? '' : kind}`.trim();
   el.textContent = text;

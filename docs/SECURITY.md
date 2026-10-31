@@ -53,6 +53,6 @@ Callsign is held in server memory for the life of a room (+ a short reconnect wi
 ## Not covered / known gaps
 
 - No CAPTCHA, no account-level bans, no IP reputation: a determined attacker with many IPs can still fill rooms or connections up to the global caps.
-- No lag compensation or server-side aim validation beyond physics: an aim-bot is not detectable here.
+- Lag compensation trusts the client's `vt` within a bound: a modified client can claim up to the 0.4 s cap (never more; tested), which lets its bullets hit targets up to 0.4 s behind cover. No server-side aim validation beyond physics: an aim-bot is not detectable here.
 - Rate limits are per connection/IP in one process; they reset on restart and don't coordinate across instances.
 - No third-party penetration test or fuzzing campaign has been done.

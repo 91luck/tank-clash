@@ -55,10 +55,14 @@ Optional automation: add a `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` se
 
 ## What's in the game
 
+- **Look:** pixel-art tanks drawn by code (three distinct silhouettes, animated treads, team colours plus ▲/■ icons), industrial arena with raised steel and breakable crates, tread marks and scorch marks, glowing shells and layered explosions, a bold game UI. On phones the camera zooms in and follows your tank, with a minimap.
+
 - **Play now:** quick match with whoever is online. If nobody is around, it offers an instant match against bots.
 - **Play with friends:** private room, invite link, WhatsApp share button, host picks match length, and adds or removes bots (easy, normal or hard) for either squad.
 - **Practice:** 1v1 or 2v2 against bots, fully offline once the page has loaded.
-- Assault, Heavy and Scout tanks, each with a special ability; destructible walls; four power-ups; sudden-death overtime.
+- Assault, Heavy and Scout tanks, each with a special ability; destructible walls; seven power-ups (including Triple Shot, Ricochet and Overcharge); sudden-death overtime.
+- **Drop-in:** friends can open the invite link even mid-match and land on the squad with fewer players (taking a bot's seat if needed). "Play now" drops you into public matches already running.
+- **Lag compensation:** your shots are judged against what you saw on screen (bounded to 400 ms), so online aiming feels fair.
 - Damage numbers, kill banners, first-match control hints, reconnect after a dropped connection, a pause menu, rebindable keys, a reduced-motion mode, and an installable app.
 
 ## Scripts
@@ -96,4 +100,4 @@ The browser sends only **intentions** (drive, turn, fire, ability) 30 times a se
 
 ## Roadmap
 
-Hindi UI · spectator mode · more maps · lag-compensated hits · quick chat/emotes · gamepad support · optional accounts and stats · a balance pass based on human playtests.
+Hindi UI · spectator mode · more maps · quick chat/emotes · gamepad support · optional accounts and stats · a balance pass based on human playtests.

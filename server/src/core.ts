@@ -370,7 +370,7 @@ export class GameCore {
 
     switch (m.t) {
       case 'createRoom':
-        return this.onCreateRoom(client, session, m.settings, now);
+        return this.onCreateRoom(client, session, m.settings, now, m.open === true);
       case 'joinRoom':
         return this.onJoinRoom(client, session, m.code, now);
       case 'leaveRoom':
@@ -395,8 +395,11 @@ export class GameCore {
       case 'setSettings':
         return this.reply(client, room.setSettings(session.id, m.settings));
       case 'startMatch':
-      case 'rematch':
-        return this.reply(client, room.start(session.id));
+      case 'rematch': {
+        const r = room.start(session.id);
+        if (r.ok && room.quick) this.drainQueueInto(room); // people already searching join this public match
+        return this.reply(client, r);
+      }
       case 'toLobby':
         return this.reply(client, room.toLobby(session.id));
       case 'addBot':
@@ -495,6 +498,7 @@ export class GameCore {
     s: Session,
     settings: { durationSec?: number } | undefined,
     now: number,
+    open = false,
   ): void {
     if (s.roomCode) return this.sendError(client, 'already_in_room', 'Leave your current room first.');
     if (this.rooms.size >= this.cfg.maxRooms)
@@ -502,7 +506,7 @@ export class GameCore {
     if (!client.createBucket.take(now))
       return this.sendError(client, 'rate_limited', 'You are creating rooms too quickly.');
     this.removeFromQueue(s.id);
-    const room = this.newRoom(s);
+    const room = this.newRoom(s, open);
     if (settings) room.setSettings(s.id, settings);
     room.broadcastRoom();
     this.log.info('room created', { room: room.code, rooms: this.rooms.size });
@@ -559,8 +563,33 @@ export class GameCore {
 
   // ------------------------------------------------------------ quick match
 
+  /** A public match that is running and has a seat (a free one, or a bot to replace), fullest first. */
+  private findDropInRoom(): Room | undefined {
+    return [...this.rooms.values()]
+      .filter((r) => r.quick && r.acceptsDropIn())
+      .sort((a, b) => b.humanCount() - a.humanCount())[0];
+  }
+
+  private drainQueueInto(room: Room): void {
+    for (const id of [...this.queue]) {
+      const s = this.sessions.get(id);
+      if (!s?.client || s.roomCode || !room.acceptsDropIn()) continue;
+      if (room.addPlayer(s.id, s.name).ok) {
+        s.roomCode = room.code;
+        this.removeFromQueue(s.id);
+      }
+    }
+  }
+
   private onQuickMatch(client: Client, s: Session): void {
     if (s.roomCode) return this.sendError(client, 'already_in_room', 'Leave your current room first.');
+    // Prefer dropping into a public match already in progress: no waiting, and a human replaces a bot.
+    const running = this.findDropInRoom();
+    if (running && running.addPlayer(s.id, s.name).ok) {
+      this.removeFromQueue(s.id);
+      s.roomCode = running.code;
+      return;
+    }
     if (!this.queue.includes(s.id)) this.queue.push(s.id);
     this.notifyQueue();
     if (this.queue.length >= 4) this.formQuickMatch();

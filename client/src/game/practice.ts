@@ -71,6 +71,10 @@ export class PracticeMatch {
     return this.sim.tanks.get(this.meId)?.angle ?? 0;
   }
 
+  phase(): string {
+    return this.sim.phase;
+  }
+
   self(): { x: number; y: number; a: number; alive: boolean } | null {
     const t = this.sim.tanks.get(this.meId);
     return t ? { x: t.x, y: t.y, a: t.angle, alive: t.alive } : null;

@@ -54,6 +54,11 @@ export class OnlineMatch {
     return this.predictor.angle;
   }
 
+  /** Latest match phase from the server (debug/test hook). */
+  phase(): string | null {
+    return this.timeline.latest()?.phase ?? null;
+  }
+
   /** Server-confirmed state of the local tank (debug/test hook; carries no authority). */
   self(): { x: number; y: number; a: number; alive: boolean } | null {
     const t = this.timeline.latest()?.tanks.find((k) => k.id === this.start.you);
@@ -137,8 +142,21 @@ export class OnlineMatch {
     }
     this.seq++;
     this.lastSent = input;
-    this.conn.send({ t: 'input', seq: this.seq, ...input });
+    const vt = this.viewTick();
+    this.conn.send(
+      vt === null ? { t: 'input', seq: this.seq, ...input } : { t: 'input', seq: this.seq, ...input, vt },
+    );
     this.predictor.step(this.seq, input);
+  }
+
+  /**
+   * The server tick currently on screen (interpolated world). Sent with each input so the server can judge this
+   * player's shots against what they actually saw (lag compensation). Null until the clock is synchronised.
+   */
+  private viewTick(): number | null {
+    if (this.clockOffset === null) return null;
+    const renderT = performance.now() / 1000 - this.clockOffset - this.interpDelay;
+    return Math.max(0, Math.floor(renderT * this.start.tickRate));
   }
 }
 

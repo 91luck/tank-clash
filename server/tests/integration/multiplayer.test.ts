@@ -128,17 +128,68 @@ describe('rooms and lobby', () => {
     expect((await clients[0]!.next('error')).code).toBe('bad_message');
   });
 
-  it('rejects a 9th player (room full) and any join during a running match', async () => {
+  it('rejects a 9th human (room full), before and during a match', async () => {
     const { code, clients } = await room(['1', '2', '3', '4', '5', '6', '7', '8']);
     const ninth = await TestClient.join(ts.port, '9');
     open.push(ninth);
     ninth.send({ t: 'joinRoom', code });
     expect((await ninth.next('error')).code).toBe('room_full');
-    clients[7]!.send({ t: 'leaveRoom' }); // free a seat, then start a 7-player match
-    await clients[7]!.next('left');
-    await startMatch(ts, clients.slice(0, 7));
+    await startMatch(ts, clients);
     ninth.send({ t: 'joinRoom', code });
-    expect((await ninth.next('error')).code).toBe('match_in_progress');
+    expect((await ninth.next('error')).code).toBe('room_full');
+  });
+
+  it('spreads humans evenly across squads as they join by link (bots only fill gaps)', async () => {
+    const { clients } = await room(['H', 'A', 'B', 'C']);
+    const info = clients[0]!.lastRoom()!;
+    const humans = (t: number) => info.players.filter((p) => p.team === t && !p.bot).length;
+    expect([humans(1), humans(2)]).toEqual([2, 2]);
+  });
+
+  it('drop-in: a friend opening the link during a running match lands on the smaller squad and plays', async () => {
+    const { code, clients } = await room(['Host', 'Two', 'Three']); // Alpha: Host, Three; Bravo: Two
+    await startMatch(ts, clients);
+    const late = await TestClient.join(ts.port, 'Late');
+    open.push(late);
+    late.send({ t: 'joinRoom', code });
+    const start = await late.next('matchStart');
+    expect(start.you).toBe(late.id);
+    const r = ts.server.getRoom(code)!;
+    expect(r.players.get(late.id)!.team).toBe(2); // Bravo had fewer humans
+    const tank = r.sim!.tanks.get(late.id)!;
+    expect(tank.alive).toBe(true);
+    expect(tank.protectUntil).toBeGreaterThan(r.sim!.tick); // spawn protection on drop-in
+    // Everyone else is told about the newcomer.
+    await clients[0]!.sync();
+    expect(clients[0]!.lastRoom()!.players.some((p) => p.id === late.id)).toBe(true);
+    // The late joiner can actually drive.
+    const x0 = tank.x;
+    const y0 = tank.y;
+    late.send({ ...input(1, { throttle: 1 }) });
+    await advance(ts, 15, [...clients, late]);
+    expect(Math.hypot(tank.x - x0, tank.y - y0)).toBeGreaterThan(5);
+  });
+
+  it('drop-in into a full room replaces a bot on the squad that needs a human, without ending the match', async () => {
+    const { code, clients } = await room(['Host']);
+    const host = clients[0]!;
+    host.send({ t: 'fillBots', difficulty: 'easy' }); // 1 human + bots, 2 per side
+    for (let i = 0; i < 4; i++)
+      host.send({ t: 'addBot', team: (i % 2 === 0 ? 2 : 1) as 1 | 2, difficulty: 'easy' });
+    await host.sync();
+    expect(host.lastRoom()!.players).toHaveLength(GAME_CONFIG.match.maxPlayers);
+    await startMatch(ts, clients);
+    const r = ts.server.getRoom(code)!;
+    const botsBravoBefore = [...r.players.values()].filter((p) => p.bot && p.team === 2).length;
+    const late = await TestClient.join(ts.port, 'Late');
+    open.push(late);
+    late.send({ t: 'joinRoom', code });
+    await late.next('matchStart');
+    expect(r.players.get(late.id)!.team).toBe(2);
+    expect([...r.players.values()].filter((p) => p.bot && p.team === 2).length).toBe(botsBravoBefore - 1);
+    expect(r.players.size).toBe(GAME_CONFIG.match.maxPlayers);
+    expect(r.sim!.tanks.size).toBe(GAME_CONFIG.match.maxPlayers);
+    expect(r.sim!.phase).not.toBe('ended');
   });
 
   it('14. lets a player leave safely, transferring host', async () => {
@@ -475,6 +526,63 @@ describe('match lifecycle', () => {
 });
 
 describe('quick match', () => {
+  it('"Play now" drops a searcher into a public bot match already running, replacing a bot', async () => {
+    const [x, y] = [await TestClient.join(ts.port, 'Xena'), await TestClient.join(ts.port, 'Yash')];
+    open.push(x, y);
+    x.send({ t: 'createRoom', open: true }); // the "play vs bots while waiting" room
+    const code = (await x.next('room')).room.code as string;
+    x.send({ t: 'fillBots', difficulty: 'easy' });
+    x.send({ t: 'startMatch' });
+    await x.next('matchStart');
+    y.send({ t: 'quickMatch' });
+    const start = await y.next('matchStart');
+    expect(start.you).toBe(y.id);
+    const r = ts.server.getRoom(code)!;
+    expect(r.players.get(y.id)!.team).toBe(2); // opposite squad to the only other human
+    expect(r.sim!.tanks.has(y.id)).toBe(true);
+  });
+
+  it('a player already waiting in the queue is pulled into a public match the moment it starts', async () => {
+    const [x, y] = [await TestClient.join(ts.port, 'Xena'), await TestClient.join(ts.port, 'Yash')];
+    open.push(x, y);
+    y.send({ t: 'quickMatch' });
+    await y.next('queue');
+    x.send({ t: 'createRoom', open: true });
+    const code = (await x.next('room')).room.code as string;
+    x.send({ t: 'fillBots', difficulty: 'easy' });
+    x.send({ t: 'startMatch' });
+    await y.next('matchStart');
+    expect(ts.server.getRoom(code)!.players.has(y.id)).toBe(true);
+  });
+
+  it('"Play now" never drops anyone into a public match whose humans have all disconnected', async () => {
+    const [x, y] = [await TestClient.join(ts.port, 'Xena'), await TestClient.join(ts.port, 'Yash')];
+    open.push(x, y);
+    x.send({ t: 'createRoom', open: true });
+    const code = (await x.next('room')).room.code as string;
+    x.send({ t: 'fillBots', difficulty: 'easy' });
+    x.send({ t: 'startMatch' });
+    await x.next('matchStart');
+    await x.close(); // the only human leaves (session kept for the reconnect grace period)
+    await new Promise((r) => setTimeout(r, 50));
+    y.send({ t: 'quickMatch' });
+    expect((await y.next('queue')).status).toBe('queued');
+    expect(ts.server.getRoom(code)!.players.has(y.id)).toBe(false);
+  });
+
+  it('private rooms are never filled by matchmaking', async () => {
+    const [x, y] = [await TestClient.join(ts.port, 'Xena'), await TestClient.join(ts.port, 'Yash')];
+    open.push(x, y);
+    x.send({ t: 'createRoom' });
+    const code = (await x.next('room')).room.code as string;
+    x.send({ t: 'fillBots', difficulty: 'easy' });
+    x.send({ t: 'startMatch' });
+    await x.next('matchStart');
+    y.send({ t: 'quickMatch' });
+    expect((await y.next('queue')).status).toBe('queued');
+    expect(ts.server.getRoom(code)!.players.has(y.id)).toBe(false);
+  });
+
   it('pairs two waiting players into a started match and lets them cancel', async () => {
     const a = await TestClient.join(ts.port, 'QA');
     const b = await TestClient.join(ts.port, 'QB');

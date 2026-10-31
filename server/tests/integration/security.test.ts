@@ -213,6 +213,34 @@ describe('abuse of game actions', () => {
     expect(a.closed).toBeNull();
   });
 
+  it('lag compensation: accepts the viewed tick, clamps the rewind, rejects malformed values', async () => {
+    const { code, clients } = await room(['A', 'B']);
+    const [a] = clients as [TestClient, TestClient];
+    await startMatch(ts, clients);
+    const sim = ts.server.getRoom(code)!.sim!;
+    const t = tankOf(code, a.id);
+    const max = Math.round(GAME_CONFIG.limits.maxRewindSec * GAME_CONFIG.tickRate);
+    const waitLag = async (want: number): Promise<void> => {
+      for (let i = 0; i < 500 && t.viewLag !== want; i++) await new Promise((r) => setTimeout(r, 2));
+      expect(t.viewLag).toBe(want);
+    };
+    // A plausible view (6 ticks behind the next tick) is taken as-is.
+    a.send({ ...input(1, { throttle: 1 }), vt: sim.tick + 1 - 6 });
+    await waitLag(6);
+    // Claiming a view far in the past is clamped to the cap.
+    a.send({ ...input(2, { throttle: 0 }), vt: 0 });
+    await waitLag(max);
+    // A view "from the future" gives no rewind at all.
+    a.send({ ...input(3, { throttle: 1 }), vt: sim.tick + 1000 });
+    await waitLag(0);
+    // Malformed values are rejected by the schema and change nothing.
+    for (const vt of [-1, 1.5, '7', 1e12]) a.send({ ...input(10, { throttle: 1 }), vt });
+    await a.sync();
+    expect(a.all('error').filter((e) => e.code === 'bad_message').length).toBeGreaterThanOrEqual(4);
+    expect(t.viewLag).toBe(0);
+    await expectServerAlive();
+  });
+
   it('ignores stale and duplicated inputs', async () => {
     const { code, clients } = await room(['A', 'B']);
     const [a, b] = clients as [TestClient, TestClient];

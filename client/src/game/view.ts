@@ -2,6 +2,7 @@ import {
   GAME_CONFIG,
   getMap,
   type MapDef,
+  type PowerUpKind,
   type SimEvent,
   type Snapshot,
   type TankSnapshot,
@@ -18,6 +19,16 @@ const TEAM_NAME = { 1: 'Alpha', 2: 'Bravo' } as const;
  * Everything the player sees during a match, shared by online and practice modes:
  * canvas drawing, HUD, kill feed, countdown / eliminated overlays and sound/particle reactions to sim events.
  */
+const POWERUP_NAME: Record<PowerUpKind, string> = {
+  speed: 'Speed!',
+  shield: 'Shield!',
+  rapid: 'Rapid fire!',
+  health: '+ Health',
+  triple: 'Triple Shot!',
+  bounce: 'Ricochet!',
+  overcharge: 'Overcharge!',
+};
+
 export class MatchView {
   readonly map: MapDef;
   private readonly renderer: Renderer;
@@ -145,7 +156,10 @@ export class MatchView {
           }
           break;
         case 'powerTake':
-          if (ev.tank === this.meId) this.sfx.play('powerup');
+          if (ev.tank === this.meId) {
+            this.sfx.play('powerup');
+            this.showBanner(POWERUP_NAME[ev.kind]);
+          }
           break;
         case 'phase':
           if (ev.phase === 'playing') this.sfx.play('go');
@@ -176,6 +190,15 @@ export class MatchView {
   hideCoach(): void {
     $('coach').hidden = true;
     this.coachUntil = 0;
+  }
+
+  /** One-line, non-interactive notice in the feed (players joining/leaving, your squad on drop-in). */
+  notice(text: string): void {
+    const row = el('div', { class: 'notice', text });
+    const feed = $('killfeed');
+    feed.append(row);
+    while (feed.childElementCount > 5) feed.firstElementChild?.remove();
+    window.setTimeout(() => row.remove(), 6000);
   }
 
   private addKillFeed(killerId: string, victimId: string): void {
@@ -260,6 +283,9 @@ export class MatchView {
     if (me.pr === 1) items.push({ text: 'Protected' });
     if ((me.fx & 1) !== 0) items.push({ text: 'Speed ⚡' });
     if ((me.fx & 2) !== 0) items.push({ text: 'Rapid »' });
+    if ((me.fx & 4) !== 0) items.push({ text: 'Triple Shot' });
+    if ((me.fx & 8) !== 0) items.push({ text: 'Ricochet' });
+    if ((me.fx & 16) !== 0) items.push({ text: 'Overcharge' });
     const sig = items.map((i) => i.text + (i.ready ? '*' : '')).join('|');
     if (chips.dataset.sig !== sig) {
       chips.dataset.sig = sig;

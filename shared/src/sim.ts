@@ -44,9 +44,14 @@ export interface Tank {
   abilityReadyTick: number;
   speedBoostUntil: number;
   rapidUntil: number;
+  tripleUntil: number;
+  bounceUntil: number;
+  overchargeUntil: number;
   shieldHp: number;
   shieldUntil: number;
   input: TankInput;
+  /** Ticks between what this tank's player sees and the server's present (0 for bots/practice). */
+  viewLag: number;
   prevAbility: boolean;
   kills: number;
   deaths: number;
@@ -63,6 +68,10 @@ export interface Bullet {
   angle: number;
   expireTick: number;
   damage: number;
+  /** Lag compensation: hit-test this bullet against targets as they were `lag` ticks ago (0 = present). */
+  lag: number;
+  /** Ricochets left off steel walls (Ricochet power-up). */
+  bounces: number;
 }
 
 export interface PowerUp {
@@ -105,7 +114,7 @@ export interface TankSnapshot {
   cd: number;
   /** Respawn countdown remaining, seconds (1 decimal), 0 when alive. */
   rs: number;
-  /** Power-up effect bitmask: 1 = speed, 2 = rapid. */
+  /** Power-up effect bitmask: 1 speed, 2 rapid, 4 triple shot, 8 ricochet, 16 overcharge. */
   fx: number;
   k: number;
   d: number;
@@ -161,6 +170,9 @@ export class Sim {
   readonly scores: Record<TeamId, number> = { 1: 0, 2: 0 };
 
   private events: SimEvent[] = [];
+  /** Recent tank positions for lag compensation: ring buffer indexed by tick. */
+  private readonly history = new Map<string, { tick: number; x: number; y: number; alive: boolean }[]>();
+  private readonly maxRewindTicks: number;
   private nextBulletId = 1;
   private nextPowerId = 1;
   private readonly rng: Rng;
@@ -177,6 +189,9 @@ export class Sim {
     this.tickRate = opts.tickRate ?? GAME_CONFIG.tickRate;
     this.dt = 1 / this.tickRate;
     this.rng = new Rng(opts.seed ?? 1);
+    this.maxRewindTicks = Math.round(
+      GAME_CONFIG.limits.maxRewindSec * (opts.tickRate ?? GAME_CONFIG.tickRate),
+    );
     this.wallHp = new Int8Array(this.map.walls.length).fill(GAME_CONFIG.walls.destructibleHp);
     this.countdownEnd = secondsToTicks(GAME_CONFIG.match.countdownSec, this.tickRate);
     this.respawnTicks = secondsToTicks(this.settings.respawnSec, this.tickRate);
@@ -205,23 +220,62 @@ export class Sim {
       abilityReadyTick: 0,
       speedBoostUntil: 0,
       rapidUntil: 0,
+      tripleUntil: 0,
+      bounceUntil: 0,
+      overchargeUntil: 0,
       shieldHp: 0,
       shieldUntil: 0,
       input: { ...NEUTRAL_INPUT },
+      viewLag: 0,
       prevAbility: false,
       kills: 0,
       deaths: 0,
     };
     this.tanks.set(tank.id, tank);
     this.placeAtSpawn(tank);
+    // Dropping into a running match: same spawn protection as a respawn.
+    if (this.phase === 'playing' || this.phase === 'overtime')
+      tank.protectUntil = this.tick + this.protectTicks;
     return tank;
   }
 
   /** Remove a tank (player left). Triggers an early win if a whole team is gone. */
   removeTank(id: string): void {
     this.tanks.delete(id);
+    this.history.delete(id);
     this.bullets = this.bullets.filter((b) => b.owner !== id);
     this.checkForfeit();
+  }
+
+  /**
+   * Lag compensation input: how many ticks behind the present this player's screen is (network + interpolation).
+   * Clamped to [0, maxRewind] so a modified client gains at most a small, bounded advantage.
+   */
+  setViewLag(id: string, ticks: number): void {
+    const t = this.tanks.get(id);
+    if (!t) return;
+    t.viewLag = Number.isFinite(ticks) ? clamp(Math.round(ticks), 0, this.maxRewindTicks) : 0;
+  }
+
+  /** Where `t` was `ago` ticks back, if recorded and it was alive then; otherwise null. */
+  private pastPosition(t: Tank, ago: number): { x: number; y: number } | null {
+    const ring = this.history.get(t.id);
+    if (!ring) return null;
+    const want = this.tick - ago;
+    const h = ring[want % ring.length];
+    return h && h.tick === want && h.alive ? h : null;
+  }
+
+  private recordHistory(): void {
+    const size = this.maxRewindTicks + 2;
+    for (const t of this.tanks.values()) {
+      let ring = this.history.get(t.id);
+      if (!ring) {
+        ring = new Array(size);
+        this.history.set(t.id, ring);
+      }
+      ring[this.tick % size] = { tick: this.tick, x: t.x, y: t.y, alive: t.alive };
+    }
   }
 
   setInput(id: string, input: TankInput): void {
@@ -312,6 +366,7 @@ export class Sim {
     }
 
     for (const t of this.tanks.values()) this.stepTank(t);
+    this.recordHistory();
     this.stepBullets();
     this.stepPowerups();
     this.stepRespawns();
@@ -406,26 +461,35 @@ export class Sim {
 
   private tryFire(t: Tank): void {
     if (this.tick < t.fireReadyTick) return;
+    const pu = GAME_CONFIG.powerups;
+    const triple = t.tripleUntil > this.tick;
     let live = 0;
     for (const b of this.bullets) if (b.owner === t.id) live++;
-    if (live >= GAME_CONFIG.bullet.maxPerTank) return;
+    if (live >= GAME_CONFIG.bullet.maxPerTank * (triple ? 3 : 1)) return;
     t.fireReadyTick = this.tick + this.fireCooldownTicks(t);
     t.protectUntil = 0; // firing ends spawn protection (anti spawn-abuse)
     const cfg = GAME_CONFIG.classes[t.cls];
+    const damage = Math.round(cfg.damage * (t.overchargeUntil > this.tick ? pu.overchargeMultiplier : 1));
+    const bounces = t.bounceUntil > this.tick ? pu.bounceCount : 0;
+    const angles = triple ? [t.angle - pu.tripleSpreadRad, t.angle, t.angle + pu.tripleSpreadRad] : [t.angle];
     const mx = t.x + Math.cos(t.angle) * (GAME_CONFIG.tank.radius + 4);
     const my = t.y + Math.sin(t.angle) * (GAME_CONFIG.tank.radius + 4);
-    this.bullets.push({
-      id: this.nextBulletId++,
-      owner: t.id,
-      team: t.team,
-      x: mx,
-      y: my,
-      vx: Math.cos(t.angle) * GAME_CONFIG.bullet.speed,
-      vy: Math.sin(t.angle) * GAME_CONFIG.bullet.speed,
-      angle: t.angle,
-      expireTick: this.tick + secondsToTicks(GAME_CONFIG.bullet.lifetimeSec, this.tickRate),
-      damage: cfg.damage,
-    });
+    for (const a of angles) {
+      this.bullets.push({
+        id: this.nextBulletId++,
+        owner: t.id,
+        team: t.team,
+        x: mx,
+        y: my,
+        vx: Math.cos(a) * GAME_CONFIG.bullet.speed,
+        vy: Math.sin(a) * GAME_CONFIG.bullet.speed,
+        angle: a,
+        expireTick: this.tick + secondsToTicks(GAME_CONFIG.bullet.lifetimeSec, this.tickRate),
+        damage,
+        lag: t.viewLag,
+        bounces,
+      });
+    }
     this.events.push({ e: 'shot', tank: t.id, x: round(mx, 1), y: round(my, 1), a: round(t.angle, 2) });
   }
 
@@ -482,6 +546,25 @@ export class Sim {
         const col = Math.floor(b.x / ts);
         const row = Math.floor(b.y / ts);
         if (this.isBlockedTile(col, row)) {
+          const inside = col >= 0 && row >= 0 && col < this.map.cols && row < this.map.rows;
+          const steel = inside && (this.map.wallIdAt[row * this.map.cols + col] ?? -1) < 0;
+          if (b.bounces > 0 && steel) {
+            // Ricochet: step back out of the wall and mirror the velocity on the axis that crossed into it.
+            const px = b.x - (b.vx * this.dt) / SUB;
+            const py = b.y - (b.vy * this.dt) / SUB;
+            const pc = Math.floor(px / ts);
+            const pr = Math.floor(py / ts);
+            const flipX = pc !== col && this.isBlockedTile(col, pr);
+            const flipY = pr !== row && this.isBlockedTile(pc, row);
+            if (flipX || !flipY) b.vx = -b.vx;
+            if (flipY || !flipX) b.vy = -b.vy;
+            b.x = px;
+            b.y = py;
+            b.angle = Math.atan2(b.vy, b.vx);
+            b.bounces--;
+            this.events.push({ e: 'solidHit', x: round(px, 1), y: round(py, 1) });
+            continue;
+          }
           dead = true;
           const idx = row * this.map.cols + col;
           const wallId =
@@ -496,7 +579,9 @@ export class Sim {
         for (const t of this.tanks.values()) {
           if (!t.alive || t.id === b.owner) continue;
           if (t.team === b.team && !this.settings.friendlyFire) continue; // passes through friends
-          if (Math.hypot(b.x - t.x, b.y - t.y) < tr + br) {
+          // Favor the shooter (bounded): test against where the target was on the shooter's screen.
+          const p = b.lag > 0 ? (this.pastPosition(t, b.lag) ?? t) : t;
+          if (Math.hypot(b.x - p.x, b.y - p.y) < tr + br) {
             dead = true;
             this.damageTank(t, b);
             break;
@@ -616,6 +701,10 @@ export class Sim {
     else if (kind === 'speed')
       t.speedBoostUntil = this.tick + secondsToTicks(cfg.speedDuration, this.tickRate);
     else if (kind === 'rapid') t.rapidUntil = this.tick + secondsToTicks(cfg.rapidDuration, this.tickRate);
+    else if (kind === 'triple') t.tripleUntil = this.tick + secondsToTicks(cfg.tripleDuration, this.tickRate);
+    else if (kind === 'bounce') t.bounceUntil = this.tick + secondsToTicks(cfg.bounceDuration, this.tickRate);
+    else if (kind === 'overcharge')
+      t.overchargeUntil = this.tick + secondsToTicks(cfg.overchargeDuration, this.tickRate);
     else {
       t.shieldHp = Math.max(t.shieldHp, cfg.shieldHp);
       t.shieldUntil = Math.max(t.shieldUntil, this.tick + secondsToTicks(cfg.shieldDuration, this.tickRate));
@@ -630,6 +719,9 @@ export class Sim {
         t.shieldHp = 0;
         t.speedBoostUntil = 0;
         t.rapidUntil = 0;
+        t.tripleUntil = 0;
+        t.bounceUntil = 0;
+        t.overchargeUntil = 0;
         t.abilityActiveUntil = 0;
         this.placeAtSpawn(t);
         t.protectUntil = this.tick + this.protectTicks;
@@ -683,7 +775,12 @@ export class Sim {
         ab: t.abilityActiveUntil > this.tick ? 1 : 0,
         cd: round(Math.max(0, t.abilityReadyTick - this.tick) / this.tickRate, 1),
         rs: t.alive ? 0 : round(Math.max(0, t.respawnTick - this.tick) / this.tickRate, 1),
-        fx: (t.speedBoostUntil > this.tick ? 1 : 0) | (t.rapidUntil > this.tick ? 2 : 0),
+        fx:
+          (t.speedBoostUntil > this.tick ? 1 : 0) |
+          (t.rapidUntil > this.tick ? 2 : 0) |
+          (t.tripleUntil > this.tick ? 4 : 0) |
+          (t.bounceUntil > this.tick ? 8 : 0) |
+          (t.overchargeUntil > this.tick ? 16 : 0),
         k: t.kills,
         d: t.deaths,
       });

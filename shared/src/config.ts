@@ -6,7 +6,7 @@
 
 export type TankClass = 'assault' | 'heavy' | 'scout';
 export type TeamId = 1 | 2;
-export type PowerUpKind = 'speed' | 'shield' | 'rapid' | 'health';
+export type PowerUpKind = 'speed' | 'shield' | 'rapid' | 'health' | 'triple' | 'bounce' | 'overcharge';
 
 export type AbilityKind = 'rapid' | 'shield' | 'speed';
 export const CLASS_ABILITY: Record<TankClass, AbilityKind> = {
@@ -16,7 +16,15 @@ export const CLASS_ABILITY: Record<TankClass, AbilityKind> = {
 };
 
 export const TANK_CLASSES: readonly TankClass[] = ['assault', 'heavy', 'scout'] as const;
-export const POWERUP_KINDS: readonly PowerUpKind[] = ['speed', 'shield', 'rapid', 'health'] as const;
+export const POWERUP_KINDS: readonly PowerUpKind[] = [
+  'speed',
+  'shield',
+  'rapid',
+  'health',
+  'triple',
+  'bounce',
+  'overcharge',
+] as const;
 
 export interface ClassConfig {
   label: string;
@@ -130,11 +138,25 @@ export const GAME_CONFIG = {
     rapidDuration: 5,
     shieldHp: 40,
     shieldDuration: 6,
+    /** Triple Shot: every shot fires three shells in a fan. */
+    tripleDuration: 6,
+    tripleSpreadRad: 0.17,
+    /** Ricochet: shells bounce off steel walls this many times. */
+    bounceDuration: 8,
+    bounceCount: 2,
+    /** Overcharge: shells hit harder. */
+    overchargeDuration: 6,
+    overchargeMultiplier: 1.5,
   },
 
   /** Hard anti-cheat ceilings used by the server when validating input. */
   limits: {
     inputsPerSecond: 60,
+    /**
+     * Lag compensation ceiling: a shooter's bullets are checked against where targets were up to this long ago
+     * (what the shooter actually saw). Bounded so a client cannot claim an unlimited rewind.
+     */
+    maxRewindSec: 0.4,
     maxMessageBytes: 2048,
     maxNameLength: 16,
     reconnectGraceSec: 30,

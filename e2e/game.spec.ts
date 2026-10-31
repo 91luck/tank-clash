@@ -9,6 +9,22 @@ const gotoMenu = async (page: Page, name: string): Promise<void> => {
 const screenOf = (page: Page) =>
   page.evaluate(() => (window as unknown as { __tankclash: { screen: string } }).__tankclash.screen);
 
+/** Wait until the battle is really on (countdown finished), without racing the countdown overlay's first frame. */
+async function waitForBattle(page: Page): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () => (window as unknown as { __tankclash: { phase: string | null } }).__tankclash.phase,
+        ),
+      {
+        timeout: 15_000,
+      },
+    )
+    .toMatch(/^(playing|overtime)$/);
+  await expect(page.getByTestId('countdown')).toBeHidden();
+}
+
 /** True when the canvas contains more than a flat colour, i.e. something was actually drawn. */
 async function canvasHasContent(page: Page): Promise<boolean> {
   return page.evaluate(() => {
@@ -71,7 +87,7 @@ test('practice match: countdown, play, pause, resume, quit', async ({ page }) =>
   await page.getByTestId('btn-practice-go').click();
   await expect(page.getByTestId('canvas')).toBeVisible();
   await expect(page.getByTestId('countdown')).toBeVisible();
-  await expect(page.getByTestId('countdown')).toBeHidden({ timeout: 8000 });
+  await waitForBattle(page);
   expect(await canvasHasContent(page)).toBe(true);
 
   const hpBefore = await page.locator('#hp-text').textContent();
@@ -134,7 +150,7 @@ test('@fastclock private room: host creates, friend joins by invite link, picks 
   await host.getByTestId('btn-start').click();
   await expect(host.getByTestId('canvas')).toBeVisible();
   await expect(guest.getByTestId('canvas')).toBeVisible();
-  await expect(host.getByTestId('countdown')).toBeHidden({ timeout: 10_000 });
+  await waitForBattle(host);
   expect(await canvasHasContent(host)).toBe(true);
 
   // Host drives and shoots; the guest's view must keep updating from server snapshots.
@@ -201,7 +217,7 @@ test('a solo player can add a bot from the lobby and start immediately', async (
   await page.getByTestId('btn-start').click();
   await expect(page.getByTestId('canvas')).toBeVisible();
   await expect(page.getByTestId('coach')).toBeVisible(); // first match shows control hints
-  await expect(page.getByTestId('countdown')).toBeHidden({ timeout: 10_000 });
+  await waitForBattle(page);
   expect(await canvasHasContent(page)).toBe(true);
 });
 
@@ -321,7 +337,7 @@ test('@mobile practice on a phone in landscape: joystick drives, FIRE shoots, bo
   await page.getByTestId('practice-diff').selectOption('easy');
   await page.getByTestId('btn-practice-go').click();
   await expect(page.getByTestId('touch-fire')).toBeVisible();
-  await expect(page.getByTestId('countdown')).toBeHidden({ timeout: 8000 });
+  await waitForBattle(page);
   const moved = await travelDuring(page, () => thumbs(page, 2400));
   // Assault drives 150 px/s; even with turning and wall bumps, 2.4 s of stick should cover well over 100 px.
   expect(moved, `tank travelled ${moved.toFixed(0)} px`).toBeGreaterThan(100);
@@ -338,7 +354,7 @@ test('@mobile online match from a phone: touch input reaches the server', async 
   await expect(page.getByTestId('btn-start')).toBeEnabled();
   await page.getByTestId('btn-start').click();
   await expect(page.getByTestId('touch-fire')).toBeVisible();
-  await expect(page.getByTestId('countdown')).toBeHidden({ timeout: 10_000 });
+  await waitForBattle(page);
   // self() is the server's snapshot, so this proves the server applied the touch input.
   const moved = await travelDuring(page, async () => {
     await thumbs(page, 2400);
@@ -357,4 +373,83 @@ test('@mobile portrait phone gets a rotate prompt that can be dismissed', async 
   await page.locator('#btn-portrait-dismiss').click();
   await expect(prompt).toBeHidden();
   await expect(page.getByTestId('touch-fire')).toBeVisible();
+});
+
+test('online inputs carry the server tick on screen, a plausible distance behind the server (lag compensation)', async ({
+  page,
+}) => {
+  const lags: number[] = [];
+  let lastSnapTick = 0;
+  page.on('websocket', (ws) => {
+    ws.on('framereceived', (f) => {
+      const m = /^\{"t":"snap","ack":\d+,"s":\{"tick":(\d+)/.exec(String(f.payload));
+      if (m) lastSnapTick = Number(m[1]);
+    });
+    ws.on('framesent', (f) => {
+      const text = String(f.payload);
+      if (!text.startsWith('{"t":"input"')) return;
+      const msg = JSON.parse(text) as { vt?: number };
+      if (typeof msg.vt === 'number' && lastSnapTick > 0) lags.push(lastSnapTick - msg.vt);
+    });
+  });
+  await gotoMenu(page, 'Aimer');
+  await page.getByTestId('btn-create').click();
+  await page.getByTestId('btn-create-go').click();
+  await expect(page.getByTestId('lobby-code')).toHaveText(/^[A-Z2-9]{6}$/);
+  await page.getByTestId('btn-bot-2').click();
+  await page.getByTestId('btn-start').click();
+  await waitForBattle(page);
+  await page.keyboard.down('KeyW');
+  await page.keyboard.down('Space');
+  await page.waitForTimeout(1500);
+  await page.keyboard.up('KeyW');
+  await page.keyboard.up('Space');
+  expect(lags.length).toBeGreaterThan(10);
+  lags.sort((x, y) => x - y);
+  const median = lags[Math.floor(lags.length / 2)]!;
+  // On localhost the screen shows the world ~2 snapshot intervals (4 ticks at 30 Hz) behind the newest snapshot.
+  expect(median, `median view lag ${median} ticks`).toBeGreaterThanOrEqual(1);
+  expect(median, `median view lag ${median} ticks`).toBeLessThanOrEqual(12);
+});
+
+test('drop-in: a friend opening the invite link mid-match lands in the battle on the smaller squad', async ({
+  browser,
+}) => {
+  const hostCtx = await browser.newContext();
+  const lateCtx = await browser.newContext();
+  const host = await hostCtx.newPage();
+  const late = await lateCtx.newPage();
+  await gotoMenu(host, 'HostHen');
+  await host.getByTestId('btn-create').click();
+  await host.getByTestId('btn-create-go').click();
+  await expect(host.getByTestId('lobby-code')).toHaveText(/^[A-Z2-9]{6}$/);
+  const code = (await host.getByTestId('lobby-code').textContent()) as string;
+  await host.getByTestId('btn-bot-2').click();
+  await host.getByTestId('btn-start').click();
+  await expect(host.getByTestId('canvas')).toBeVisible(); // match screen up...
+  await waitForBattle(host);
+  await expect(host.locator('#killfeed')).toContainText("You're on ▲ Alpha");
+
+  await late.addInitScript(() =>
+    localStorage.setItem('tankclash.settings.v1', JSON.stringify({ name: 'LateLiam' })),
+  );
+  await late.goto(`/join/${code}`);
+  await late.getByTestId('btn-join-go').click();
+  await expect(late.getByTestId('canvas')).toBeVisible();
+  await expect(late.locator('#killfeed')).toContainText(/You joined (▲ Alpha|■ Bravo) — the match is on!/);
+  // Host: 1 human on Alpha vs 1 bot on Bravo, so the newcomer is balanced onto Bravo and the host is told.
+  await expect(late.locator('#killfeed')).toContainText('■ Bravo');
+  await expect(host.locator('#killfeed')).toContainText('LateLiam joined ■ Bravo');
+  expect(await canvasHasContent(late)).toBe(true);
+
+  await hostCtx.close();
+  await lateCtx.close();
+});
+
+test('the page asks browsers not to offer translation (no popups over the touch controls)', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await expect(page.locator('meta[name="google"]')).toHaveAttribute('content', 'notranslate');
+  await expect(page.locator('html')).toHaveAttribute('translate', 'no');
 });

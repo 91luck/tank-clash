@@ -39,7 +39,11 @@ export const ClientMessageSchema = z.discriminatedUnion('t', [
     /** Session token from a previous `welcome`, used to resume after a dropped connection. */
     resume: z.string().min(16).max(64).optional(),
   }),
-  z.strictObject({ t: z.literal('createRoom'), settings: settingsPatch.optional() }),
+  z.strictObject({
+    t: z.literal('createRoom'),
+    settings: settingsPatch.optional(),
+    open: z.boolean().optional(),
+  }),
   z.strictObject({ t: z.literal('joinRoom'), code: roomCode }),
   z.strictObject({ t: z.literal('leaveRoom') }),
   z.strictObject({ t: z.literal('setTeam'), team: teamId }),
@@ -56,6 +60,7 @@ export const ClientMessageSchema = z.discriminatedUnion('t', [
     turn: z.number().min(-1).max(1),
     fire: z.boolean(),
     ability: z.boolean(),
+    vt: z.number().int().min(0).max(2_000_000_000).optional(),
   }),
   z.strictObject({ t: z.literal('rematch') }),
   z.strictObject({ t: z.literal('toLobby') }),

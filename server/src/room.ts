@@ -100,22 +100,64 @@ export class Room {
     return n;
   }
 
+  private humansOn(team: TeamId): number {
+    let n = 0;
+    for (const p of this.players.values()) if (!p.bot && p.team === team) n++;
+    return n;
+  }
+
+  /** Newest bot on a team (the one a joining human replaces). */
+  private botOn(team: TeamId): RoomPlayer | undefined {
+    return [...this.players.values()].reverse().find((p) => p.bot && p.team === team);
+  }
+
+  /**
+   * Seat for a newcomer. Humans are spread evenly across the two squads (bots only fill gaps): the side with fewer
+   * humans wins, ties go to the side with fewer tanks. A full side still has a seat if a bot can make way.
+   */
+  private pickSeat(requested?: TeamId): { team: TeamId; replace?: RoomPlayer } | null {
+    const perTeam = GAME_CONFIG.match.maxPlayers / 2;
+    const hasSeat = (t: TeamId): boolean => this.teamCount(t) < perTeam || !!this.botOn(t);
+    let team: TeamId =
+      requested ??
+      (this.humansOn(1) !== this.humansOn(2)
+        ? this.humansOn(1) < this.humansOn(2)
+          ? 1
+          : 2
+        : this.teamCount(1) <= this.teamCount(2)
+          ? 1
+          : 2);
+    if (!hasSeat(team)) {
+      const other: TeamId = team === 1 ? 2 : 1;
+      if (requested !== undefined || !hasSeat(other)) return null;
+      team = other;
+    }
+    return { team, replace: this.teamCount(team) >= perTeam ? this.botOn(team) : undefined };
+  }
+
+  /**
+   * Join in any phase. In the lobby/results the newcomer just takes a seat; during a running match they drop straight
+   * into the battle on the auto-balanced side (with spawn protection), replacing a bot if that side is full.
+   */
   addPlayer(id: string, name: string, team?: TeamId): Result {
     if (this.players.has(id)) return fail('bad_state', 'Already in this room.');
-    if (this.phase === 'match')
-      return fail('match_in_progress', 'A match is already in progress in this room.');
-    if (this.players.size >= GAME_CONFIG.match.maxPlayers) {
-      // A real player always beats a bot: free a seat by removing one bot (from the bigger team).
-      const bot = [...this.players.values()]
-        .filter((p) => p.bot)
-        .sort((a, b) => this.teamCount(b.team) - this.teamCount(a.team))[0];
-      if (!bot) return fail('room_full', 'This room is full.');
-      this.players.delete(bot.id);
+    const seat = this.pickSeat(team);
+    if (!seat) return fail('room_full', 'This room is full.');
+    if (this.phase === 'match' && (!this.sim || this.sim.phase === 'ended'))
+      return fail('match_in_progress', 'This match is just finishing. Try again in a moment.');
+    this.players.set(id, { id, name, team: seat.team, cls: 'assault', connected: true });
+    if (seat.replace) this.players.delete(seat.replace.id);
+    if (this.phase === 'match' && this.sim) {
+      // Add the human before removing the bot, so the side is never momentarily empty (which would forfeit).
+      this.sim.addTank({ id, name, team: seat.team, cls: 'assault' });
+      if (seat.replace) {
+        this.bots?.removeBot(seat.replace.id);
+        this.sim.removeTank(seat.replace.id);
+      }
     }
-    const t: TeamId = team ?? (this.teamCount(1) <= this.teamCount(2) ? 1 : 2);
-    this.players.set(id, { id, name, team: t, cls: 'assault', connected: true });
     this.touch();
     this.broadcastRoom();
+    if (this.phase === 'match' && this.sim) this.sendMatchStart(id);
     // Joining between matches (results screen): show the newcomer the last result; they play the rematch.
     if (this.phase === 'results' && this.lastEnd) this.deps.send(id, this.lastEnd);
     return OK;
@@ -207,6 +249,17 @@ export class Room {
     this.touch();
     this.broadcastRoom();
     return OK;
+  }
+
+  /**
+   * A running match that a "Play now" player can be dropped into: it has a seat and at least one human who is
+   * actually connected (never drop someone into a room whose people have all left and only bots remain).
+   */
+  acceptsDropIn(): boolean {
+    if (this.phase !== 'match' || !this.sim || this.sim.phase === 'ended' || this.pickSeat() === null)
+      return false;
+    for (const p of this.players.values()) if (!p.bot && p.connected) return true;
+    return false;
   }
 
   humanCount(): number {
@@ -327,7 +380,7 @@ export class Room {
   handleInput(
     id: string,
     seq: number,
-    input: { throttle: number; turn: number; fire: boolean; ability: boolean },
+    input: { throttle: number; turn: number; fire: boolean; ability: boolean; vt?: number },
   ): void {
     if (this.phase !== 'match' || !this.sim) return;
     const p = this.players.get(id);
@@ -337,6 +390,9 @@ export class Room {
     this.lastSeq.set(id, seq);
     this.lastInputAt.set(id, this.sim.tick);
     this.sim.setInput(id, input);
+    // Lag compensation: the input is applied on the next tick; the player was looking at tick `vt`.
+    // Sim clamps this to [0, maxRewind], so an absurd or future `vt` cannot widen the rewind.
+    if (input.vt !== undefined) this.sim.setViewLag(id, this.sim.tick + 1 - input.vt);
   }
 
   tick(): void {

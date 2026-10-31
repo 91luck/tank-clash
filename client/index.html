@@ -1,7 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" translate="no">
   <head>
     <meta charset="UTF-8" />
+    <!-- Game UI: stop browsers popping a "Translate this page?" bar over the touch controls. -->
+    <meta name="google" content="notranslate" />
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
@@ -33,7 +35,10 @@
       <main id="screen-menu" class="screen menu" data-screen="menu" aria-labelledby="title">
         <canvas id="attract" class="attract" aria-hidden="true"></canvas>
         <div class="menu-panel">
-          <h1 id="title" class="logo">Tank Clash<small>Squad Wars</small></h1>
+          <h1 id="title" class="logo">
+            <span class="logo-line">Tank</span><span class="logo-line two">Clash</span>
+            <small>Squad Wars · up to 8 players</small>
+          </h1>
           <p class="tagline">Team tank battles in your browser. Send a link, your friends are in.</p>
           <label class="field">
             <span>Your callsign</span>
@@ -583,9 +588,20 @@
           </ul>
           <h3>Battlefield</h3>
           <p>
-            Grey steel blocks are solid. Brick walls break after three hits. Pick-ups: <b>S</b> speed,
-            <b>O</b> shield, <b>R</b> rapid fire, <b>+</b> repair. You can't be hurt for two seconds after
-            respawning.
+            Grey steel blocks are solid. Brick walls break after three hits. You can't be hurt for two seconds
+            after (re)spawning, while your tank blinks.
+          </p>
+          <h3>Pick-ups</h3>
+          <ul>
+            <li><b>S</b> Speed · <b>O</b> Shield · <b>R</b> Rapid fire · <b>+</b> Repair</li>
+            <li><b>3</b> Triple Shot: three shells per shot, in a fan</li>
+            <li><b>B</b> Ricochet: shells bounce off steel walls twice. Shoot round corners!</li>
+            <li><b>!</b> Overcharge: shells hit 1.5× harder</li>
+          </ul>
+          <h3>Joining late</h3>
+          <p>
+            Open an invite link any time, even mid-match: you drop straight in on the squad with fewer players
+            (taking a bot's place if needed).
           </p>
           <button class="btn primary" type="button" data-close>Got it</button>
         </div>

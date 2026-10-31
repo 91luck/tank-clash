@@ -1,4 +1,4 @@
-import '@fontsource/saira-stencil-one/latin-400.css';
+import '@fontsource/russo-one/latin-400.css';
 import '@fontsource/chakra-petch/latin-400.css';
 import '@fontsource/chakra-petch/latin-600.css';
 import './style.css';
@@ -281,12 +281,27 @@ function onServerError(m: Extract<ServerMessage, { t: 'error' }>): void {
   }
 }
 
+/** Small, non-blocking in-match notices when humans drop in or leave (bots swapping out stay silent). */
+function announceChanges(prev: RoomInfo, next: RoomInfo): void {
+  const before = new Map(prev.players.map((p) => [p.id, p]));
+  const after = new Map(next.players.map((p) => [p.id, p]));
+  const squad = (t: TeamId): string => (t === 1 ? '▲ Alpha' : '■ Bravo');
+  for (const p of next.players) {
+    if (!p.bot && !before.has(p.id) && p.id !== me?.id) view.notice(`${p.name} joined ${squad(p.team)}`);
+  }
+  for (const p of prev.players) {
+    if (!p.bot && !after.has(p.id)) view.notice(`${p.name} left`);
+  }
+}
+
 function onRoom(r: RoomInfo): void {
+  const prev = room;
   const prevPhase = room?.phase;
   room = r;
   lastRoomCode = r.code;
   if (r.phase === 'match') {
-    // Names/connection flags can change mid-match.
+    // Names/connection flags can change mid-match; players can also drop in or leave.
+    if (prev && prevPhase === 'match' && online) announceChanges(prev, r);
     view.setPlayers(playersFromRoom(r));
     return;
   }
@@ -327,6 +342,14 @@ function startOnlineMatch(m: Extract<ServerMessage, { t: 'matchStart' }>): void 
   setupTouch();
   online = new OnlineMatch(m, playersFromRoom(room), view, conn, input);
   online.run();
+  const mine = room.players.find((p) => p.id === m.you);
+  if (mine) {
+    // Always say which squad you're on; if you dropped into a running match, say so.
+    const squad = mine.team === 1 ? '▲ Alpha' : '■ Bravo';
+    view.notice(
+      m.snap.phase === 'countdown' ? `You're on ${squad}` : `You joined ${squad} — the match is on!`,
+    );
+  }
   maybeCoach();
 }
 
@@ -336,10 +359,19 @@ function maybeCoach(): void {
   settings.update({ coachSeen: true });
   view.showCoach(
     touchCapable
-      ? 'Drag your left thumb to drive the way you point. Tap Fire with your right thumb.'
+      ? 'Left thumb: drive · Right thumb: Fire'
       : `Drive with W A S D or the arrow keys. Fire with ${keyLabel(settings.value.keyFire)}, ability with ${keyLabel(settings.value.keyAbility)}.`,
-    9000,
+    6000,
   );
+  // Once the player starts playing they don't need the hint any more.
+  const dismiss = (): void => {
+    if (currentScreen() === 'game' && !$('overlay-countdown').hidden) return; // keep it during the countdown
+    view.hideCoach();
+    $('touch').removeEventListener('pointerdown', dismiss);
+    window.removeEventListener('keydown', dismiss);
+  };
+  $('touch').addEventListener('pointerdown', dismiss);
+  window.addEventListener('keydown', dismiss);
 }
 
 function stopOnline(): void {
@@ -367,9 +399,23 @@ window.addEventListener('resize', () => {
   if (!portrait) $('overlay-portrait').hidden = true;
 });
 $('joy-zone').addEventListener('pointerdown', () => $('joy-zone').classList.add('used'));
+{
+  const game = $('screen-game');
+  const block = (e: Event): void => e.preventDefault();
+  game.addEventListener('contextmenu', block);
+  game.addEventListener('selectstart', block);
+  // iOS Safari ignores touch-action for page bounce / pull-to-refresh; cancel stray scroll gestures in the arena.
+  game.addEventListener(
+    'touchmove',
+    (e) => {
+      if (!(e.target as HTMLElement).closest('.overlay')) e.preventDefault();
+    },
+    { passive: false },
+  );
+}
 $('btn-portrait-rotate').addEventListener('click', async () => {
   if (await enterLandscapeFullscreen()) $('overlay-portrait').hidden = true;
-  else toast('Rotate your phone sideways (auto-rotate may be off).');
+  else toast('Rotate your phone sideways (auto-rotate may be off).', 'error');
 });
 $('btn-portrait-dismiss').addEventListener('click', () => {
   $('overlay-portrait').hidden = true;
@@ -600,7 +646,8 @@ $('btn-queue-bots').addEventListener('click', () => {
   phoneMatchGesture();
   conn.send({ t: 'cancelQuick' });
   autoBotStart = 'normal';
-  conn.send({ t: 'createRoom' });
+  // Public: other "Play now" players drop into this match and take the bots' seats.
+  conn.send({ t: 'createRoom', open: true });
 });
 $('btn-create').addEventListener('click', () => showScreen('create'));
 $('btn-create-go').addEventListener('click', () => {
@@ -685,7 +732,7 @@ function buildClassCards(container: HTMLElement, group: string, onPick: (c: Tank
     if (cls === chosenClass) radio.checked = true;
     radio.addEventListener('change', () => onPick(cls));
     const icon = el('canvas', { attrs: { 'aria-hidden': 'true' } });
-    drawTankIcon(icon, cls, 1, 72, 52);
+    drawTankIcon(icon, cls, 1, 96, 72);
     label.append(
       radio,
       icon,
@@ -726,7 +773,7 @@ function renderLobby(): void {
     $(`count-${team}`).textContent = `${members.length}/${perTeam}`;
     const rows = members.map((p) => {
       const icon = el('canvas', { attrs: { 'aria-hidden': 'true' } });
-      drawTankIcon(icon, p.cls, team, 30, 22);
+      drawTankIcon(icon, p.cls, team, 34, 26);
       const tags: HTMLElement[] = [el('span', { class: 'badge', text: GAME_CONFIG.classes[p.cls].label })];
       if (p.bot) tags.push(el('span', { class: 'badge bot', text: `bot · ${p.bot}` }));
       if (p.id === r.hostId) tags.push(el('span', { class: 'badge host', text: 'host' }));
@@ -974,5 +1021,8 @@ boot();
   },
   get myShots() {
     return view.myShots;
+  },
+  get phase() {
+    return online?.phase() ?? practice?.phase() ?? null;
   },
 };

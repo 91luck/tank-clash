@@ -49,6 +49,8 @@ What is **never** trusted from the client: position, velocity, damage, hits, kil
 
 What **is** predicted client-side: only the local tank's movement, via `Sim.applyMovement` (the same function the server uses). Everything else, including your own shots hitting something, appears when the server says so.
 
+**Lag compensation (favor the shooter, bounded).** Other tanks are drawn ~2 snapshot intervals in the past, plus network delay, so an online player aims at where enemies _were_. Measured with a perfect-aim shooter against a strafing target: hit rate falls from 33% (no lag) to 17% at 200 ms and 0% at 267 ms+. Each `input` therefore carries `vt`, the server tick the player is looking at. The server stores the view lag (`tick + 1 − vt`, clamped to 0..`maxRewindSec` = 0.4 s) on the tank. Each bullet records its shooter's lag at fire time and is hit-tested against targets' positions that many ticks ago, from a short per-tank position history. With this, the same shooter keeps the 33% no-lag hit rate up to the 400 ms cap. Trade-off: a target can occasionally be hit just after reaching cover, by at most 400 ms. Bots and practice mode use lag 0. Walls are not rewound.
+
 Snapshots are plain JSON (~0.5 KB for 2 players, ~1.4 KB for 8). Walls are sent as events, with a full destroyed-wall list on `matchStart`/resume. JSON was chosen over a binary format for debuggability; measured bandwidth (≈21 KB/s per player at 8 players) is comfortably small, see TESTING.
 
 ## Sessions and reconnect
@@ -57,7 +59,7 @@ Snapshots are plain JSON (~0.5 KB for 2 players, ~1.4 KB for 8). Walls are sent 
 
 ## Room lifecycle
 
-`lobby → match → results → (rematch → match | toLobby → lobby)`. Empty or idle rooms expire (10 min lobby, 5 min results). Joining is allowed in lobby and results (a late joiner sees the last result and plays the rematch); joining mid-match returns `match_in_progress`. If the host leaves, host transfers to a connected player. Quick match is a queue; when ≥2 players wait (after `QUICK_MATCH_WAIT_MS`) the server builds a balanced room and starts it.
+`lobby → match → results → (rematch → match | toLobby → lobby)`. Empty or idle rooms expire (10 min lobby, 5 min results). Joining is allowed in every phase. In the lobby/results the newcomer takes a seat (and sees the last result). During a match they **drop in**: `Room.pickSeat` puts them on the squad with fewer humans, removes that squad's newest bot if it is full (adding the human's tank before removing the bot, so a squad is never momentarily empty and forfeited), gives 2 s spawn protection and sends them `matchStart`; everyone else gets a `room` update and the client shows a one-line notice. If the host leaves, host transfers to a connected human. Quick match: a searcher is first dropped into a running _public_ room (`createRoom {open:true}`, used by the vs-bots fallback) that has a seat and a connected human; otherwise they queue, queued players are pulled into a public match the moment it starts, and when ≥2 players wait the server builds a balanced room.
 
 ## Client rendering
 

@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { GAME_CONFIG, getMap, type Snapshot, type TankSnapshot } from '@tankclash/shared';
@@ -218,5 +218,14 @@ describe('index.html wiring', () => {
     for (const s of ['menu', 'create', 'join', 'queue', 'practice', 'lobby', 'game', 'results']) {
       expect(html).toContain(`data-screen="${s}"`);
     }
+  });
+});
+
+describe('static asset config', () => {
+  it('ships no catch-all _redirects rule (Cloudflare Workers rejects it as an infinite loop)', () => {
+    const path = join(__dirname, '..', 'public', '_redirects');
+    if (!existsSync(path)) return; // no file: fine
+    const text = readFileSync(path, 'utf8');
+    expect(text).not.toMatch(/^\s*\/\*\s+\/index\.html/m);
   });
 });

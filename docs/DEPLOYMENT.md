@@ -102,7 +102,7 @@ No `ALLOWED_ORIGINS` is needed: the server allows its own origin and reads `REND
 ## Option D: any Docker host, or static client + separate server
 
 - **Docker:** `docker build -t tank-clash . && docker run -p 8080:8080 tank-clash`. The image serves the client and the game on `$PORT`, runs as a non-root user, and has a health check.
-- **Split hosting:** build the client with `VITE_WS_URL=wss://<game-server>/ws VITE_PUBLIC_ORIGIN=https://<static-site> npm run build -w client`. Host `client/dist` anywhere static; `_redirects`, `404.html` and `_headers` are generated for SPA links and security headers. Then set `ALLOWED_ORIGINS=https://<static-site>` on the server.
+- **Split hosting:** build the client with `VITE_WS_URL=wss://<game-server>/ws VITE_PUBLIC_ORIGIN=https://<static-site> npm run build -w client`. Host `client/dist` anywhere static; `404.html` (GitHub Pages) and `_headers` are generated. On Netlify, add a `_redirects` file with `/*  /index.html  200` to `client/dist` yourself for `/join/CODE` links. It is deliberately **not** in `client/public`: Cloudflare Workers rejects that rule as an infinite loop (its `single-page-application` setting already handles those links). Then set `ALLOWED_ORIGINS=https://<static-site>` on the server.
 
 ## Environment variables (Node server)
 

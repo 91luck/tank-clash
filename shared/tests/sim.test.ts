@@ -7,6 +7,7 @@ import {
   buildMap,
   getMap,
   MAP_SOURCES,
+  POWERUP_KINDS,
   validateMap,
   secondsToTicks,
   type SimEvent,
@@ -326,6 +327,8 @@ describe('damage, kills and respawn', () => {
         angle: 0,
         expireTick: sim.tick + 50,
         damage: 20,
+        lag: 0,
+        bounces: 0,
       });
     }
     const ev = stepN(sim, 1);
@@ -427,6 +430,8 @@ describe('abilities', () => {
         angle: 0,
         expireTick: sim.tick + 20,
         damage: 20,
+        lag: 0,
+        bounces: 0,
       });
     stepN(sim, 1);
     expect(h.hp).toBe(h.maxHp);
@@ -644,5 +649,183 @@ describe('bots', () => {
     }
     expect(decided).toBeGreaterThan(0);
     expect(hardWins / decided).toBeGreaterThanOrEqual(0.66);
+  });
+});
+
+describe('lag compensation (favor the shooter, bounded)', () => {
+  // Open arena: a straight, wall-free line between shooter and target.
+  const arena = buildMap({
+    id: 'arena',
+    name: 'Arena',
+    quadrant: [
+      '################',
+      ...Array.from({ length: 9 }, (_, i) => (i === 0 || i === 4 ? '#1' : '#.') + '..............'),
+    ],
+  });
+
+  /** Shooter fires along y=320 at a target that steps out of the line `sidestepAt` ticks later (bullet lands ~21). */
+  function shotAtTargetThatSidesteps(viewLag: number, sidestepAt = 15): { hits: number } {
+    const sim = new Sim({ map: arena, seed: 3, settings: { durationSec: 600 } });
+    const a = sim.addTank({ id: 'a', name: 'A', team: 1, cls: 'assault' });
+    const b = sim.addTank({ id: 'b', name: 'B', team: 2, cls: 'heavy' });
+    startPlaying(sim);
+    place(a, 200, 320, 0);
+    place(b, 520, 320);
+    a.protectUntil = 0;
+    b.protectUntil = 0;
+    sim.setViewLag('a', viewLag);
+    stepN(sim, 3); // some history with the target in the line of fire
+    sim.setInput('a', { ...idle, fire: true });
+    stepN(sim, 1);
+    sim.setInput('a', idle);
+    let hits = 0;
+    for (let i = 0; i < 40; i++) {
+      if (i === sidestepAt) place(b, 520, 380); // sidestep out of the bullet's path
+      for (const e of stepN(sim, 1)) if (e.e === 'hit' && e.target === 'b' && e.by === 'a') hits++;
+    }
+    return { hits };
+  }
+
+  it('without lag a sidestepped shot misses (server truth)', () => {
+    expect(shotAtTargetThatSidesteps(0).hits).toBe(0);
+  });
+
+  it("with the shooter's view lag the shot is judged where the target was on their screen", () => {
+    expect(shotAtTargetThatSidesteps(10).hits).toBe(1);
+  });
+
+  it('clamps the rewind to the configured maximum, never negative', () => {
+    const { sim, a } = makeSim();
+    const max = Math.round(GAME_CONFIG.limits.maxRewindSec * GAME_CONFIG.tickRate);
+    sim.setViewLag('a', 10_000);
+    expect(a.viewLag).toBe(max);
+    sim.setViewLag('a', -5);
+    expect(a.viewLag).toBe(0);
+    sim.setViewLag('a', Number.NaN);
+    expect(a.viewLag).toBe(0);
+  });
+
+  it('a claimed lag beyond the cap cannot reach further back than the cap', () => {
+    // Target leaves the line 3 ticks after the shot; the bullet lands ~21 ticks after it. Reaching it would need an
+    // 18+ tick rewind, more than the 12-tick (400 ms) cap, so a client claiming 10,000 ticks still misses.
+    expect(shotAtTargetThatSidesteps(10_000, 3).hits).toBe(0);
+    // ...while within the cap the same mechanism works (sidestep at 15 needs a ~6+ tick rewind).
+    expect(shotAtTargetThatSidesteps(10_000, 15).hits).toBe(1);
+  });
+});
+
+describe('new power-ups: Triple Shot, Ricochet, Overcharge', () => {
+  const arena = buildMap({
+    id: 'arena2',
+    name: 'Arena',
+    quadrant: [
+      '################',
+      ...Array.from({ length: 9 }, (_, i) => (i === 0 || i === 4 ? '#1' : '#.') + '..............'),
+    ],
+  });
+  function setup() {
+    const sim = new Sim({ map: arena, seed: 5, settings: { durationSec: 600 } });
+    const a = sim.addTank({ id: 'a', name: 'A', team: 1, cls: 'assault' });
+    const b = sim.addTank({ id: 'b', name: 'B', team: 2, cls: 'heavy' });
+    startPlaying(sim);
+    a.protectUntil = 0;
+    b.protectUntil = 0;
+    return { sim, a, b };
+  }
+  function grab(sim: Sim, t: Tank, kind: 'triple' | 'bounce' | 'overcharge'): void {
+    sim.powerups.push({ id: 99, kind, x: t.x, y: t.y, expireTick: sim.tick + 100 });
+    stepN(sim, 1);
+  }
+
+  it('every power-up kind can spawn', () => {
+    expect([...POWERUP_KINDS].sort()).toEqual([
+      'bounce',
+      'health',
+      'overcharge',
+      'rapid',
+      'shield',
+      'speed',
+      'triple',
+    ]);
+  });
+
+  it('Triple Shot fires three shells in a fan, and shows in the snapshot', () => {
+    const { sim, a, b } = setup();
+    place(a, 200, 320, 0);
+    place(b, 800, 500);
+    grab(sim, a, 'triple');
+    expect(sim.snapshot(false).tanks.find((t) => t.id === 'a')!.fx & 4).toBe(4);
+    sim.setInput('a', { ...idle, fire: true });
+    stepN(sim, 1);
+    const mine = sim.bullets.filter((x) => x.owner === 'a');
+    expect(mine).toHaveLength(3);
+    const angles = mine.map((x) => x.angle).sort((p, q) => p - q);
+    expect(angles[0]).toBeCloseTo(-GAME_CONFIG.powerups.tripleSpreadRad, 5);
+    expect(angles[2]).toBeCloseTo(GAME_CONFIG.powerups.tripleSpreadRad, 5);
+  });
+
+  it('Ricochet bounces shells off steel walls (and they can still hit after the bounce)', () => {
+    const { sim, a, b } = setup();
+    place(a, 200, 320, Math.PI); // facing the left steel wall
+    place(b, 350, 320); // behind the shooter: only a ricochet can reach it within the shell's lifetime
+    grab(sim, a, 'bounce');
+    sim.setInput('a', { ...idle, fire: true });
+    stepN(sim, 1);
+    sim.setInput('a', idle);
+    place(a, 200, 200); // step aside so the returning shell passes our old spot
+    const shell = sim.bullets.find((x) => x.owner === 'a')!;
+    expect(shell.vx).toBeLessThan(0);
+    const events = stepN(sim, 40);
+    expect(events.some((e) => e.e === 'hit' && e.target === 'b' && e.by === 'a')).toBe(true);
+  });
+
+  it('without Ricochet the same shell dies on the wall', () => {
+    const { sim, a, b } = setup();
+    place(a, 200, 320, Math.PI);
+    place(b, 350, 320);
+    sim.setInput('a', { ...idle, fire: true });
+    stepN(sim, 1);
+    sim.setInput('a', idle);
+    place(a, 200, 200);
+    const events = stepN(sim, 40);
+    expect(events.some((e) => e.e === 'hit' && e.target === 'b')).toBe(false);
+  });
+
+  it('Overcharge multiplies shell damage', () => {
+    const { sim, a, b } = setup();
+    place(a, 200, 320, 0);
+    place(b, 320, 320);
+    grab(sim, a, 'overcharge');
+    sim.setInput('a', { ...idle, fire: true });
+    const events = stepN(sim, 10);
+    const hit = events.find((e) => e.e === 'hit' && e.target === 'b');
+    expect(hit && hit.e === 'hit' ? hit.dmg : 0).toBe(
+      Math.round(GAME_CONFIG.classes.assault.damage * GAME_CONFIG.powerups.overchargeMultiplier),
+    );
+  });
+
+  it('all power-up effects end on death', () => {
+    const { sim, a, b } = setup();
+    place(a, 200, 320, 0);
+    place(b, 800, 500);
+    for (const k of ['triple', 'bounce', 'overcharge'] as const) grab(sim, a, k);
+    a.hp = 1;
+    sim.bullets.push({
+      id: 500,
+      owner: 'b',
+      team: 2,
+      x: a.x + 20,
+      y: a.y,
+      vx: -400,
+      vy: 0,
+      angle: Math.PI,
+      expireTick: sim.tick + 20,
+      damage: 50,
+      lag: 0,
+      bounces: 0,
+    });
+    stepN(sim, 5 + secondsToTicks(GAME_CONFIG.match.respawnSec));
+    expect(a.alive).toBe(true);
+    expect([a.tripleUntil, a.bounceUntil, a.overchargeUntil]).toEqual([0, 0, 0]);
   });
 });

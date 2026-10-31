@@ -16,7 +16,8 @@ export const NAME_REGEX = /^[\p{L}\p{N} _.-]+$/u;
 
 export type ClientMessage =
   | { t: 'hello'; v: typeof PROTOCOL_VERSION; name: string; resume?: string }
-  | { t: 'createRoom'; settings?: { durationSec?: number } }
+  /** `open`: a public room that "Play now" players can drop into (used for the vs-bots fallback). */
+  | { t: 'createRoom'; settings?: { durationSec?: number }; open?: boolean }
   | { t: 'joinRoom'; code: string }
   | { t: 'leaveRoom' }
   | { t: 'setTeam'; team: TeamId }
@@ -27,7 +28,16 @@ export type ClientMessage =
   | { t: 'removeBot'; id: string }
   /** Host: top both teams up with bots (at least 2v2, teams even) - used for "play now with bots". */
   | { t: 'fillBots'; difficulty: Difficulty }
-  | { t: 'input'; seq: number; throttle: number; turn: number; fire: boolean; ability: boolean }
+  | {
+      t: 'input';
+      seq: number;
+      throttle: number;
+      turn: number;
+      fire: boolean;
+      ability: boolean;
+      /** Server tick the client is displaying when it sampled this input (lag compensation). Optional. */
+      vt?: number;
+    }
   | { t: 'rematch' }
   | { t: 'toLobby' }
   | { t: 'quickMatch' }
