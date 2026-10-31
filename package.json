@@ -1,0 +1,59 @@
+{
+  "name": "tank-clash",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TANK CLASH: Squad Wars - a server-authoritative multiplayer browser tank game",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c yellow,cyan \"npm run dev -w server\" \"npm run dev -w client\"",
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client",
+    "build": "npm run build -w client && npm run build -w server",
+    "start": "node server/dist/index.js",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "typecheck": "tsc -p shared --noEmit && tsc -p server --noEmit && tsc -p client --noEmit && tsc -p cloudflare --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run shared server/tests/unit",
+    "test:integration": "vitest run server/tests/integration",
+    "test:e2e": "playwright test",
+    "balance": "tsx scripts/balance.ts",
+    "perf": "tsx scripts/perf.ts",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "audit:deps": "npm audit --audit-level=high",
+    "dev:cloudflare": "wrangler dev",
+    "deploy:cloudflare": "wrangler deploy",
+    "test:e2e:cloudflare": "E2E_TARGET=cloudflare playwright test",
+    "personalize": "tsx scripts/personalize.ts",
+    "phone": "tsx scripts/phone.ts",
+    "test:url": "tsx scripts/test-url.ts",
+    "publish:github": "tsx scripts/publish-github.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261029.1",
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
+    "concurrently": "^10.0.6",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.10",
+    "qrcode-terminal": "^0.12.0",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5",
+    "wrangler": "^4.155.0"
+  }
+}

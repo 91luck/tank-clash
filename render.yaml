@@ -1,0 +1,24 @@
+# Render Blueprint: "New > Blueprint" in the Render dashboard, or the Deploy to Render button in README.
+# Free plan: the service sleeps after 15 min without traffic and takes a while to wake on the next visit.
+services:
+  - type: web
+    name: tank-clash
+    runtime: node
+    plan: free
+    # Singapore is the closest Render region to India. Change if most players are elsewhere.
+    region: singapore
+    # --include=dev: NODE_ENV=production below would otherwise skip the build tools.
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: node server/dist/index.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: '22'
+      - key: CLIENT_DIR
+        value: client/dist
+      - key: TRUST_PROXY
+        value: '1'
+      # No ALLOWED_ORIGINS needed: the server allows its own origin and reads RENDER_EXTERNAL_URL automatically.
